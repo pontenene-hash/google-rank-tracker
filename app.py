@@ -132,86 +132,129 @@ with st.sidebar:
     st.header("⚙️ 設定")
     api_key = st.text_input("Serper APIキー", value=os.getenv("SERPER_API_KEY", ""), type="password")
     demo_mode = st.toggle("デモモード", value=not bool(api_key), help="API通信を行わずサンプル順位で画面を確認します。")
-    match_mode = st.radio("URLの照合方法", ["入力ページのみ", "ドメイン全体"], help="ページ単位か、同じサイト内の全ページを対象にするかを選びます。")
+    match_mode = st.radio(
+        "URLの照合方法",
+        ["入力ページのみ", "ドメイン全体"],
+        index=1,
+        help="ページ単位か、同じサイト内の全ページを対象にするかを選びます。",
+    )
     st.caption("検索地域：日本 / 言語：日本語 / 取得範囲：上位100件")
 
-left, right = st.columns([1.15, 1])
-with left:
-    target_url = st.text_input("特定のWebページ", placeholder="https://example.com/service/")
-with right:
-    keyword_text = st.text_area("検索ワードの一覧表（1行に1語）", height=130, placeholder="せんげん台 整体\n越谷市 整骨院\n春日部市 鍼灸")
+def render_tracker(tab_key: str, default_url: str) -> None:
+    left, right = st.columns([1.15, 1])
+    with left:
+        target_url = st.text_input(
+            "特定のWebページ",
+            value=default_url,
+            key=f"target_url_{tab_key}",
+        )
+    with right:
+        keyword_text = st.text_area(
+            "検索ワードの一覧表（1行に1語）",
+            height=130,
+            placeholder="せんげん台 整体\n越谷市 整骨院\n春日部市 鍼灸",
+            key=f"keywords_{tab_key}",
+        )
 
-keywords = list(dict.fromkeys(line.strip() for line in keyword_text.splitlines() if line.strip()))
-run = st.button("🔍 分析開始", type="primary", use_container_width=True)
+    keywords = list(dict.fromkeys(line.strip() for line in keyword_text.splitlines() if line.strip()))
+    run = st.button(
+        "🔍 分析開始",
+        type="primary",
+        use_container_width=True,
+        key=f"run_{tab_key}",
+    )
 
-if run:
-    if not target_url.strip():
-        st.error("WebページのURLを入力してください。")
-    elif not keywords:
-        st.error("検索ワードを1つ以上入力してください。")
-    elif not demo_mode and not api_key:
-        st.error("本番計測にはSerper APIキーが必要です。左側の設定欄に入力してください。")
-    else:
-        progress = st.progress(0, text="計測を開始しています…")
-        errors: list[str] = []
-        provider = "demo" if demo_mode else "serper"
-        for index, keyword in enumerate(keywords, start=1):
-            try:
-                if demo_mode:
-                    rank, matched_url = demo_rank(keyword)
-                    time.sleep(0.08)
-                else:
-                    rank, matched_url = serper_rank(keyword, target_url, api_key, match_mode)
-                save_result(target_url.strip(), keyword, rank, matched_url, provider)
-            except Exception as exc:
-                errors.append(f"{keyword}: {exc}")
-            progress.progress(index / len(keywords), text=f"{index}/{len(keywords)}件を計測中：{keyword}")
-        progress.empty()
-        if errors:
-            st.error("一部の計測に失敗しました。\n\n" + "\n".join(errors))
+    if run:
+        if not target_url.strip():
+            st.error("WebページのURLを入力してください。")
+        elif not keywords:
+            st.error("検索ワードを1つ以上入力してください。")
+        elif not demo_mode and not api_key:
+            st.error("本番計測にはSerper APIキーが必要です。左側の設定欄に入力してください。")
         else:
-            label = "デモデータを保存しました" if demo_mode else "最新順位を保存しました"
-            st.success(f"{len(keywords)}件の{label}。")
+            progress = st.progress(0, text="計測を開始しています…")
+            errors: list[str] = []
+            provider = "demo" if demo_mode else "serper"
+            for index, keyword in enumerate(keywords, start=1):
+                try:
+                    if demo_mode:
+                        rank, matched_url = demo_rank(keyword)
+                        time.sleep(0.08)
+                    else:
+                        rank, matched_url = serper_rank(keyword, target_url, api_key, match_mode)
+                    save_result(target_url.strip(), keyword, rank, matched_url, provider)
+                except Exception as exc:
+                    errors.append(f"{keyword}: {exc}")
+                progress.progress(index / len(keywords), text=f"{index}/{len(keywords)}件を計測中：{keyword}")
+            progress.empty()
+            if errors:
+                st.error("一部の計測に失敗しました。\n\n" + "\n".join(errors))
+            else:
+                label = "デモデータを保存しました" if demo_mode else "最新順位を保存しました"
+                st.success(f"{len(keywords)}件の{label}。")
 
-if target_url.strip():
-    history = load_history(target_url.strip())
-    if not history.empty:
-        valid = history.dropna(subset=["rank"])
-        latest = latest_rows(history)
-        m1, m2, m3 = st.columns(3)
-        m1.metric("登録キーワード", history["keyword"].nunique())
-        m2.metric("10位以内", int((valid.sort_values("checked_at").groupby("keyword").tail(1)["rank"] <= 10).sum()))
-        m3.metric("最新の平均順位", f'{valid.sort_values("checked_at").groupby("keyword").tail(1)["rank"].mean():.1f}位' if not valid.empty else "—")
+    if target_url.strip():
+        history = load_history(target_url.strip())
+        if not history.empty:
+            valid = history.dropna(subset=["rank"])
+            latest = latest_rows(history)
+            m1, m2, m3 = st.columns(3)
+            m1.metric("登録キーワード", history["keyword"].nunique())
+            m2.metric("10位以内", int((valid.sort_values("checked_at").groupby("keyword").tail(1)["rank"] <= 10).sum()))
+            m3.metric("最新の平均順位", f'{valid.sort_values("checked_at").groupby("keyword").tail(1)["rank"].mean():.1f}位' if not valid.empty else "—")
 
-        st.subheader("最新の検索順位")
-        st.dataframe(latest, use_container_width=True, hide_index=True)
+            st.subheader("最新の検索順位")
+            st.dataframe(latest, use_container_width=True, hide_index=True)
 
-        st.subheader("過去1年間の順位変動")
-        chosen = st.multiselect("グラフに表示する検索ワード", sorted(history["keyword"].unique()), default=sorted(history["keyword"].unique())[:5])
-        chart_data = history[history["keyword"].isin(chosen)].dropna(subset=["rank"]).copy()
-        if chart_data.empty:
-            st.info("表示できる順位履歴がありません。")
-        else:
-            chart = (
-                alt.Chart(chart_data)
-                .mark_line(point=True)
-                .encode(
-                    x=alt.X("checked_at:T", title="計測日"),
-                    y=alt.Y("rank:Q", title="順位", scale=alt.Scale(reverse=True, domain=[1, max(100, int(chart_data['rank'].max()))])),
-                    color=alt.Color("keyword:N", title="検索ワード"),
-                    tooltip=[alt.Tooltip("checked_at:T", title="計測日時"), alt.Tooltip("keyword:N", title="検索ワード"), alt.Tooltip("rank:Q", title="順位")],
-                )
-                .properties(height=420)
-                .interactive()
+            st.subheader("過去1年間の順位変動")
+            available_keywords = sorted(history["keyword"].unique())
+            chosen = st.multiselect(
+                "グラフに表示する検索ワード",
+                available_keywords,
+                default=available_keywords[:5],
+                key=f"chart_keywords_{tab_key}",
             )
-            st.altair_chart(chart, use_container_width=True)
+            chart_data = history[history["keyword"].isin(chosen)].dropna(subset=["rank"]).copy()
+            if chart_data.empty:
+                st.info("表示できる順位履歴がありません。")
+            else:
+                chart = (
+                    alt.Chart(chart_data)
+                    .mark_line(point=True)
+                    .encode(
+                        x=alt.X("checked_at:T", title="計測日"),
+                        y=alt.Y("rank:Q", title="順位", scale=alt.Scale(reverse=True, domain=[1, max(100, int(chart_data['rank'].max()))])),
+                        color=alt.Color("keyword:N", title="検索ワード"),
+                        tooltip=[alt.Tooltip("checked_at:T", title="計測日時"), alt.Tooltip("keyword:N", title="検索ワード"), alt.Tooltip("rank:Q", title="順位")],
+                    )
+                    .properties(height=420)
+                    .interactive()
+                )
+                st.altair_chart(chart, use_container_width=True)
 
-        csv = history.to_csv(index=False).encode("utf-8-sig")
-        st.download_button("📥 履歴をCSVでダウンロード", csv, "rank_history.csv", "text/csv")
+            csv = history.to_csv(index=False).encode("utf-8-sig")
+            st.download_button(
+                "📥 履歴をCSVでダウンロード",
+                csv,
+                f"rank_history_{tab_key}.csv",
+                "text/csv",
+                key=f"download_{tab_key}",
+            )
+        else:
+            st.info("「分析開始」を押すと、ここに最新順位と履歴グラフが表示されます。")
     else:
-        st.info("「分析開始」を押すと、ここに最新順位と履歴グラフが表示されます。")
-else:
-    st.info("URLと検索ワードを入力して分析を開始してください。")
+        st.info("URLと検索ワードを入力して分析を開始してください。")
+
+
+site1_tab, site2_tab, site3_tab = st.tabs(
+    ["ponte-nene.jp", "ponte-aroma.jp", "ponte-nene.net"]
+)
+with site1_tab:
+    render_tracker("site1", "https://ponte-nene.jp/")
+with site2_tab:
+    render_tracker("site2", "https://ponte-aroma.jp/")
+with site3_tab:
+    render_tracker("site3", "https://ponte-nene.net/")
 
 with st.expander("ご利用前の注意"):
     st.markdown("""
