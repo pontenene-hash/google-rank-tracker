@@ -1,0 +1,48 @@
+{
+  "schedule": {
+    "timezone": "Asia/Tokyo",
+    "day": "monday",
+    "time": "09:10"
+  },
+  "match_mode": "domain",
+  "sites": [
+    {
+      "key": "site1",
+      "label": "ponte-nene.jp",
+      "url": "https://ponte-nene.jp/",
+      "keywords": [
+        "越谷　整体",
+        "越谷　整骨院",
+        "越谷　交通事故治療",
+        "越谷　訪問マッサージ",
+        "せんげん台　整体",
+        "せんげん台　整骨院",
+        "せんげん台　交通事故治療",
+        "せんげん台　訪問マッサージ"
+      ]
+    },
+    {
+      "key": "site2",
+      "label": "ponte-aroma.jp",
+      "url": "https://ponte-aroma.jp/",
+      "keywords": [
+        "越谷　マッサージ",
+        "越谷　エステ",
+        "越谷　フェイシャル",
+        "越谷　オイルマッサージ",
+        "せんげん台　マッサージ",
+        "せんげん台　エステ",
+        "せんげん台　フェイシャル",
+        "せんげん台　オイルマッサージ"
+      ]
+    },
+    {
+      "key": "site3",
+      "label": "ponte-nene.net",
+      "url": "https://ponte-nene.net/",
+      "keywords": [
+        "越谷　おすすめ"
+      ]
+    }
+  ]
+}
