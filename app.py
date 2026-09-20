@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import random
+import json
 import sqlite3
 import time
 from datetime import date, datetime, timedelta
@@ -16,7 +17,41 @@ import streamlit as st
 
 APP_DIR = Path(__file__).resolve().parent
 DB_PATH = Path(os.getenv("RANK_TRACKER_DB", APP_DIR / "rank_history.db"))
+CONFIG_PATH = APP_DIR / "rank_config.json"
+AUTO_HISTORY_PATH = APP_DIR / "rank_history.csv"
 SERPER_ENDPOINT = "https://google.serper.dev/search"
+SERPER_PLACES_ENDPOINT = "https://google.serper.dev/places"
+
+FALLBACK_SITES = [
+    {
+        "key": "site1",
+        "label": "ponte-nene.jp",
+        "url": "https://ponte-nene.jp/",
+        "keywords": [],
+    },
+    {
+        "key": "site2",
+        "label": "ponte-aroma.jp",
+        "url": "https://ponte-aroma.jp/",
+        "keywords": [],
+    },
+    {
+        "key": "site3",
+        "label": "ponte-nene.net",
+        "url": "https://ponte-nene.net/",
+        "keywords": [],
+    },
+]
+
+
+def load_config() -> dict:
+    if not CONFIG_PATH.exists():
+        return {"sites": FALLBACK_SITES}
+    with CONFIG_PATH.open(encoding="utf-8") as file:
+        config = json.load(file)
+    if not isinstance(config.get("sites"), list) or not config["sites"]:
+        raise ValueError("rank_config.json の sites が正しく設定されていません。")
+    return config
 
 
 def init_db() -> None:
@@ -56,6 +91,18 @@ def is_match(result_url: str, target_url: str, match_mode: str) -> bool:
     return result == target
 
 
+def target_matches(value: str, target: str) -> bool:
+    value = str(value or "").strip()
+    target = str(target or "").strip()
+    if target.startswith("gbp:"):
+        return value == target
+    return normalize_url(value) == normalize_url(target)
+
+
+def normalize_place_title(value: str) -> str:
+    return "".join(str(value or "").split()).casefold()
+
+
 def serper_rank(keyword: str, target_url: str, api_key: str, match_mode: str) -> tuple[int | None, str | None]:
     headers = {"X-API-KEY": api_key, "Content-Type": "application/json"}
     # Serper accepts up to 100 organic results in one request.
@@ -69,6 +116,33 @@ def serper_rank(keyword: str, target_url: str, api_key: str, match_mode: str) ->
         link = item.get("link", "")
         if link and is_match(link, target_url, match_mode):
             return int(item.get("position", fallback_position)), link
+    return None, None
+
+
+def serper_gbp_rank(keyword: str, profile: dict, location: str, api_key: str) -> tuple[int | None, str | None]:
+    response = requests.post(
+        SERPER_PLACES_ENDPOINT,
+        headers={"X-API-KEY": api_key, "Content-Type": "application/json"},
+        json={"q": keyword, "location": location, "gl": "jp", "hl": "ja"},
+        timeout=30,
+    )
+    response.raise_for_status()
+    data = response.json()
+    if data.get("message"):
+        raise RuntimeError(data["message"])
+
+    target_cid = str(profile.get("cid", ""))
+    target_titles = {
+        normalize_place_title(title)
+        for title in [profile["title"], *profile.get("aliases", [])]
+        if title
+    }
+    results = data.get("places") or data.get("local") or []
+    for fallback_position, item in enumerate(results, start=1):
+        item_cid = str(item.get("cid", ""))
+        item_title = normalize_place_title(item.get("title", ""))
+        if (target_cid and item_cid == target_cid) or item_title in target_titles:
+            return int(item.get("position", fallback_position)), profile.get("maps_url")
     return None, None
 
 
@@ -91,21 +165,44 @@ def save_result(target_url: str, keyword: str, rank: int | None, matched_url: st
 
 def load_history(target_url: str, days: int = 365) -> pd.DataFrame:
     since = (datetime.now() - timedelta(days=days)).isoformat(timespec="seconds")
+    frames: list[pd.DataFrame] = []
     with sqlite3.connect(DB_PATH) as conn:
-        return pd.read_sql_query(
+        local_history = pd.read_sql_query(
             "SELECT checked_at, keyword, rank, matched_url, provider FROM rankings "
             "WHERE target_url = ? AND checked_at >= ? ORDER BY checked_at",
             conn,
             params=(target_url, since),
-            parse_dates=["checked_at"],
         )
+    frames.append(local_history)
+
+    # GitHub Actionsが保存した履歴。リポジトリに残るため、アプリ再起動後も表示できます。
+    if AUTO_HISTORY_PATH.exists():
+        try:
+            automatic = pd.read_csv(AUTO_HISTORY_PATH)
+            required = {"checked_at", "target_url", "keyword", "rank", "matched_url", "provider"}
+            if required.issubset(automatic.columns):
+                automatic = automatic[
+                    automatic["target_url"].fillna("").map(lambda value: target_matches(value, target_url))
+                ][["checked_at", "keyword", "rank", "matched_url", "provider"]]
+                frames.append(automatic)
+        except (OSError, pd.errors.ParserError):
+            pass
+
+    history = pd.concat(frames, ignore_index=True)
+    if history.empty:
+        return history
+    history["checked_at"] = pd.to_datetime(history["checked_at"], errors="coerce", format="mixed")
+    history["rank"] = pd.to_numeric(history["rank"], errors="coerce")
+    history = history.dropna(subset=["checked_at"])
+    history = history[history["checked_at"] >= pd.Timestamp(since)]
+    return history.drop_duplicates().sort_values("checked_at")
 
 
-def latest_rows(history: pd.DataFrame) -> pd.DataFrame:
+def latest_rows(history: pd.DataFrame, out_of_range: str = "100位圏外") -> pd.DataFrame:
     if history.empty:
         return history
     latest = history.sort_values("checked_at").groupby("keyword", as_index=False).tail(1).copy()
-    latest["順位"] = latest["rank"].apply(lambda value: f"{int(value)}位" if pd.notna(value) else "100位圏外")
+    latest["順位"] = latest["rank"].apply(lambda value: f"{int(value)}位" if pd.notna(value) else out_of_range)
     latest["計測日時"] = latest["checked_at"].dt.strftime("%Y-%m-%d %H:%M")
     latest["検索ワード"] = latest["keyword"]
     latest["一致したURL"] = latest["matched_url"].fillna("—")
@@ -126,7 +223,7 @@ st.markdown(
     </style>""",
     unsafe_allow_html=True,
 )
-st.markdown('<div class="hero"><h1>Google順位チェッカー</h1><p>検索ワードごとの掲載順位を記録し、1年間の変化を見える化します。</p></div>', unsafe_allow_html=True)
+st.markdown('<div class="hero"><h1>Google順位チェッカー</h1><p>Web検索とGoogleマップの掲載順位を記録し、1年間の変化を見える化します。</p></div>', unsafe_allow_html=True)
 
 with st.sidebar:
     st.header("⚙️ 設定")
@@ -138,9 +235,79 @@ with st.sidebar:
         index=1,
         help="ページ単位か、同じサイト内の全ページを対象にするかを選びます。",
     )
-    st.caption("検索地域：日本 / 言語：日本語 / 取得範囲：上位100件")
+    st.caption("Web：日本の上位100件 / GBP：越谷市中心部のGoogleマップ結果")
+    st.success("自動計測：毎週月曜日 9:10（日本時間）")
 
-def render_tracker(tab_key: str, default_url: str) -> None:
+def display_history(
+    target_id: str,
+    tab_key: str,
+    out_of_range: str,
+    max_rank: int,
+) -> None:
+    history = load_history(target_id)
+    if history.empty:
+        st.info("計測を実行すると、ここに最新順位と履歴グラフが表示されます。")
+        return
+
+    valid = history.dropna(subset=["rank"])
+    latest = latest_rows(history, out_of_range)
+    m1, m2, m3 = st.columns(3)
+    m1.metric("登録キーワード", history["keyword"].nunique())
+    m2.metric("10位以内", int((valid.sort_values("checked_at").groupby("keyword").tail(1)["rank"] <= 10).sum()))
+    m3.metric(
+        "最新の平均順位",
+        f'{valid.sort_values("checked_at").groupby("keyword").tail(1)["rank"].mean():.1f}位'
+        if not valid.empty else "—",
+    )
+
+    st.subheader("最新の検索順位")
+    st.dataframe(latest, use_container_width=True, hide_index=True)
+
+    st.subheader("過去1年間の順位変動")
+    available_keywords = sorted(history["keyword"].unique())
+    chosen = st.multiselect(
+        "グラフに表示する検索ワード",
+        available_keywords,
+        default=available_keywords[:5],
+        key=f"chart_keywords_{tab_key}",
+    )
+    chart_data = history[history["keyword"].isin(chosen)].dropna(subset=["rank"]).copy()
+    if chart_data.empty:
+        st.info("表示できる順位履歴がありません。")
+    else:
+        chart = (
+            alt.Chart(chart_data)
+            .mark_line(point=True)
+            .encode(
+                x=alt.X("checked_at:T", title="計測日"),
+                y=alt.Y(
+                    "rank:Q",
+                    title="順位",
+                    scale=alt.Scale(reverse=True, domain=[1, max(max_rank, int(chart_data["rank"].max()))]),
+                ),
+                color=alt.Color("keyword:N", title="検索ワード"),
+                tooltip=[
+                    alt.Tooltip("checked_at:T", title="計測日時"),
+                    alt.Tooltip("keyword:N", title="検索ワード"),
+                    alt.Tooltip("rank:Q", title="順位"),
+                ],
+            )
+            .properties(height=420)
+            .interactive()
+        )
+        st.altair_chart(chart, use_container_width=True)
+
+    csv = history.to_csv(index=False).encode("utf-8-sig")
+    st.download_button(
+        "📥 履歴をCSVでダウンロード",
+        csv,
+        f"rank_history_{tab_key}.csv",
+        "text/csv",
+        key=f"download_{tab_key}",
+    )
+
+
+def render_tracker(tab_key: str, default_url: str, default_keywords: list[str]) -> tuple[str, list[str]]:
     left, right = st.columns([1.15, 1])
     with left:
         target_url = st.text_input(
@@ -151,6 +318,7 @@ def render_tracker(tab_key: str, default_url: str) -> None:
     with right:
         keyword_text = st.text_area(
             "検索ワードの一覧表（1行に1語）",
+            value="\n".join(default_keywords),
             height=130,
             placeholder="せんげん台 整体\n越谷市 整骨院\n春日部市 鍼灸",
             key=f"keywords_{tab_key}",
@@ -194,72 +362,133 @@ def render_tracker(tab_key: str, default_url: str) -> None:
                 st.success(f"{len(keywords)}件の{label}。")
 
     if target_url.strip():
-        history = load_history(target_url.strip())
-        if not history.empty:
-            valid = history.dropna(subset=["rank"])
-            latest = latest_rows(history)
-            m1, m2, m3 = st.columns(3)
-            m1.metric("登録キーワード", history["keyword"].nunique())
-            m2.metric("10位以内", int((valid.sort_values("checked_at").groupby("keyword").tail(1)["rank"] <= 10).sum()))
-            m3.metric("最新の平均順位", f'{valid.sort_values("checked_at").groupby("keyword").tail(1)["rank"].mean():.1f}位' if not valid.empty else "—")
-
-            st.subheader("最新の検索順位")
-            st.dataframe(latest, use_container_width=True, hide_index=True)
-
-            st.subheader("過去1年間の順位変動")
-            available_keywords = sorted(history["keyword"].unique())
-            chosen = st.multiselect(
-                "グラフに表示する検索ワード",
-                available_keywords,
-                default=available_keywords[:5],
-                key=f"chart_keywords_{tab_key}",
-            )
-            chart_data = history[history["keyword"].isin(chosen)].dropna(subset=["rank"]).copy()
-            if chart_data.empty:
-                st.info("表示できる順位履歴がありません。")
-            else:
-                chart = (
-                    alt.Chart(chart_data)
-                    .mark_line(point=True)
-                    .encode(
-                        x=alt.X("checked_at:T", title="計測日"),
-                        y=alt.Y("rank:Q", title="順位", scale=alt.Scale(reverse=True, domain=[1, max(100, int(chart_data['rank'].max()))])),
-                        color=alt.Color("keyword:N", title="検索ワード"),
-                        tooltip=[alt.Tooltip("checked_at:T", title="計測日時"), alt.Tooltip("keyword:N", title="検索ワード"), alt.Tooltip("rank:Q", title="順位")],
-                    )
-                    .properties(height=420)
-                    .interactive()
-                )
-                st.altair_chart(chart, use_container_width=True)
-
-            csv = history.to_csv(index=False).encode("utf-8-sig")
-            st.download_button(
-                "📥 履歴をCSVでダウンロード",
-                csv,
-                f"rank_history_{tab_key}.csv",
-                "text/csv",
-                key=f"download_{tab_key}",
-            )
-        else:
-            st.info("「分析開始」を押すと、ここに最新順位と履歴グラフが表示されます。")
+        display_history(target_url.strip(), tab_key, "100位圏外", 100)
     else:
         st.info("URLと検索ワードを入力して分析を開始してください。")
 
+    return target_url.strip(), keywords
 
-site1_tab, site2_tab, site3_tab = st.tabs(
-    ["ponte-nene.jp", "ponte-aroma.jp", "ponte-nene.net"]
-)
-with site1_tab:
-    render_tracker("site1", "https://ponte-nene.jp/")
-with site2_tab:
-    render_tracker("site2", "https://ponte-aroma.jp/")
-with site3_tab:
-    render_tracker("site3", "https://ponte-nene.net/")
+
+def render_gbp_tracker(profile: dict, location: str, location_label: str) -> list[str]:
+    tab_key = f"gbp_{profile['key']}"
+    st.markdown(f"### {profile['title']}")
+    st.caption(f"検索地点：{location_label} / Googleマップ上位結果を計測")
+    st.link_button("📍 GoogleマップでGBPを開く", profile["maps_url"], use_container_width=True)
+    keyword_text = st.text_area(
+        "GBP検索ワード（1行に1語）",
+        value="\n".join(profile.get("keywords", [])),
+        height=210,
+        key=f"keywords_{tab_key}",
+    )
+    keywords = list(dict.fromkeys(line.strip() for line in keyword_text.splitlines() if line.strip()))
+
+    if st.button("📍 GBP順位を計測", type="primary", use_container_width=True, key=f"run_{tab_key}"):
+        if not keywords:
+            st.error("検索ワードを1つ以上入力してください。")
+        elif not demo_mode and not api_key:
+            st.error("本番計測にはSerper APIキーが必要です。左側の設定欄に入力してください。")
+        else:
+            progress = st.progress(0, text="GBP順位の計測を開始しています…")
+            errors: list[str] = []
+            target_id = f"gbp:{profile['cid']}"
+            for index, keyword in enumerate(keywords, start=1):
+                try:
+                    if demo_mode:
+                        rank, matched_url = demo_rank(keyword)
+                        rank = min(rank or 20, 20)
+                        time.sleep(0.08)
+                        provider = "demo-gbp"
+                    else:
+                        rank, matched_url = serper_gbp_rank(keyword, profile, location, api_key)
+                        provider = "serper-places"
+                    save_result(target_id, keyword, rank, matched_url, provider)
+                except Exception as exc:
+                    errors.append(f"{keyword}: {exc}")
+                progress.progress(index / len(keywords), text=f"{index}/{len(keywords)}件を計測中：{keyword}")
+            progress.empty()
+            if errors:
+                st.error("一部の計測に失敗しました。\n\n" + "\n".join(errors))
+            else:
+                st.success(f"{len(keywords)}件のGBP順位を保存しました。")
+
+    display_history(f"gbp:{profile['cid']}", tab_key, "取得範囲外", 20)
+    return keywords
+
+
+try:
+    app_config = load_config()
+except (OSError, json.JSONDecodeError, ValueError) as exc:
+    st.error(f"設定ファイルを読み込めませんでした: {exc}")
+    app_config = {"sites": FALLBACK_SITES}
+
+web_section, gbp_section = st.tabs(["🌐 Web検索順位", "📍 GBP順位"])
+current_settings: list[dict] = []
+current_gbp_profiles: list[dict] = []
+
+with web_section:
+    sites = app_config["sites"][:3]
+    tabs = st.tabs([site.get("label", site["url"]) for site in sites])
+    for tab, site in zip(tabs, sites):
+        with tab:
+            current_url, current_keywords = render_tracker(
+                site.get("key", normalize_url(site["url"]).replace(".", "_")),
+                site["url"],
+                site.get("keywords", []),
+            )
+            current_settings.append(
+                {
+                    "key": site.get("key", "site"),
+                    "label": site.get("label", normalize_url(current_url).split("/", 1)[0]),
+                    "url": current_url,
+                    "keywords": current_keywords,
+                }
+            )
+
+with gbp_section:
+    gbp_config = app_config.get("gbp", {})
+    location = gbp_config.get("location", "Koshigaya, Saitama, Japan")
+    location_label = gbp_config.get("location_label", "越谷市中心部")
+    profiles = gbp_config.get("profiles", [])
+    if not profiles:
+        st.info("GBP設定がありません。rank_config.jsonを更新してください。")
+    else:
+        profile_tabs = st.tabs([profile["label"] for profile in profiles])
+        for profile_tab, profile in zip(profile_tabs, profiles):
+            with profile_tab:
+                current_keywords = render_gbp_tracker(profile, location, location_label)
+                current_profile = dict(profile)
+                current_profile["keywords"] = current_keywords
+                current_gbp_profiles.append(current_profile)
+
+with st.expander("自動計測のキーワードを追加・変更する方法"):
+    st.markdown(
+        "各タブの検索ワードを編集した後、下のボタンから設定ファイルをダウンロードし、"
+        "GitHubの `rank_config.json` と置き換えてください。次回の週次計測から反映されます。"
+    )
+    updated_config = {
+        "schedule": {"timezone": "Asia/Tokyo", "day": "monday", "time": "09:10"},
+        "match_mode": "domain",
+        "sites": current_settings,
+        "gbp": {
+            "location": app_config.get("gbp", {}).get("location", "Koshigaya, Saitama, Japan"),
+            "location_label": app_config.get("gbp", {}).get("location_label", "越谷市中心部"),
+            "profiles": current_gbp_profiles,
+        },
+    }
+    st.download_button(
+        "📥 更新したrank_config.jsonをダウンロード",
+        json.dumps(updated_config, ensure_ascii=False, indent=2).encode("utf-8"),
+        "rank_config.json",
+        "application/json",
+        use_container_width=True,
+    )
 
 with st.expander("ご利用前の注意"):
     st.markdown("""
     - 検索順位は地域・端末・時刻などで変わるため、実際の個人検索と差が出ることがあります。
     - 「100位圏外」は上位100件に対象URLが見つからなかった状態です。
+    - GBP順位は検索地点によって変動します。このアプリでは越谷市中心部に固定して比較します。
+    - GBPの「取得範囲外」はGoogleマップ取得結果内に対象店舗が見つからなかった状態です。
     - APIキーは画面入力中のみ利用し、データベースには保存しません。
     - 大量のキーワードを頻繁に計測するとAPI利用料が増えるため、契約プランをご確認ください。
     """)
