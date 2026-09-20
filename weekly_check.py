@@ -16,6 +16,7 @@ APP_DIR = Path(__file__).resolve().parent
 CONFIG_PATH = APP_DIR / "rank_config.json"
 HISTORY_PATH = APP_DIR / "rank_history.csv"
 SERPER_ENDPOINT = "https://google.serper.dev/search"
+SERPER_PLACES_ENDPOINT = "https://google.serper.dev/places"
 HISTORY_COLUMNS = [
     "checked_at",
     "target_url",
@@ -42,6 +43,10 @@ def is_domain_match(result_url: str, target_url: str) -> bool:
     return bool(result_domain) and result_domain == target_domain
 
 
+def normalize_place_title(value: str) -> str:
+    return "".join(str(value or "").split()).casefold()
+
+
 def fetch_rank(keyword: str, target_url: str, api_key: str) -> tuple[int | None, str | None]:
     response = requests.post(
         SERPER_ENDPOINT,
@@ -57,6 +62,33 @@ def fetch_rank(keyword: str, target_url: str, api_key: str) -> tuple[int | None,
         link = item.get("link", "")
         if link and is_domain_match(link, target_url):
             return int(item.get("position", fallback_position)), link
+    return None, None
+
+
+def fetch_gbp_rank(keyword: str, profile: dict, location: str, api_key: str) -> tuple[int | None, str | None]:
+    response = requests.post(
+        SERPER_PLACES_ENDPOINT,
+        headers={"X-API-KEY": api_key, "Content-Type": "application/json"},
+        json={"q": keyword, "location": location, "gl": "jp", "hl": "ja"},
+        timeout=30,
+    )
+    response.raise_for_status()
+    data = response.json()
+    if data.get("message"):
+        raise RuntimeError(str(data["message"]))
+
+    target_cid = str(profile.get("cid", ""))
+    target_titles = {
+        normalize_place_title(title)
+        for title in [profile["title"], *profile.get("aliases", [])]
+        if title
+    }
+    results = data.get("places") or data.get("local") or []
+    for fallback_position, item in enumerate(results, start=1):
+        item_cid = str(item.get("cid", ""))
+        item_title = normalize_place_title(item.get("title", ""))
+        if (target_cid and item_cid == target_cid) or item_title in target_titles:
+            return int(item.get("position", fallback_position)), profile.get("maps_url")
     return None, None
 
 
@@ -105,6 +137,32 @@ def main() -> int:
             except Exception as exc:
                 failed_count += 1
                 print(f"ERROR | {target_url} | {keyword} | {exc}", file=sys.stderr)
+
+    gbp_config = config.get("gbp", {})
+    location = gbp_config.get("location", "Koshigaya, Saitama, Japan")
+    for profile in gbp_config.get("profiles", []):
+        target_id = f"gbp:{profile['cid']}"
+        for keyword in dict.fromkeys(profile.get("keywords", [])):
+            keyword = keyword.strip()
+            if not keyword:
+                continue
+            try:
+                rank, matched_url = fetch_gbp_rank(keyword, profile, location, api_key)
+                label = f"{rank}位" if rank is not None else "取得範囲外"
+                print(f"GBP | {profile['label']} | {keyword} | {label}")
+                new_rows.append(
+                    {
+                        "checked_at": checked_at,
+                        "target_url": target_id,
+                        "keyword": keyword,
+                        "rank": rank,
+                        "matched_url": matched_url,
+                        "provider": "serper-places-auto",
+                    }
+                )
+            except Exception as exc:
+                failed_count += 1
+                print(f"ERROR GBP | {profile['label']} | {keyword} | {exc}", file=sys.stderr)
 
     if not new_rows:
         print("保存できる計測結果がありません。", file=sys.stderr)

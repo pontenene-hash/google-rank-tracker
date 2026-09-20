@@ -44,5 +44,48 @@
         "越谷　おすすめ"
       ]
     }
-  ]
+  ],
+  "gbp": {
+    "location": "Koshigaya, Saitama, Japan",
+    "location_label": "越谷市中心部",
+    "profiles": [
+      {
+        "key": "ponte_clinic",
+        "label": "ぽんて鍼灸整骨院",
+        "title": "ぽんて鍼灸整骨院 ぽんてカイロプラクティックオフィス",
+        "aliases": [
+          "ぽんて鍼灸整骨院"
+        ],
+        "cid": "5558918595392795634",
+        "maps_url": "https://maps.app.goo.gl/uVZhgeL29M1kHYvYA?g_st=ic",
+        "keywords": [
+          "越谷　整体",
+          "越谷　整骨院",
+          "越谷　交通事故治療",
+          "越谷　訪問マッサージ",
+          "せんげん台　整体",
+          "せんげん台　整骨院",
+          "せんげん台　交通事故治療",
+          "せんげん台　訪問マッサージ"
+        ]
+      },
+      {
+        "key": "ponte_aroma",
+        "label": "ぽんてアロマサロン",
+        "title": "ぽんてアロマサロン",
+        "cid": "120948687201481996",
+        "maps_url": "https://maps.app.goo.gl/L4bCG7AZKwzkhpFx5?g_st=ic",
+        "keywords": [
+          "越谷　マッサージ",
+          "越谷　エステ",
+          "越谷　フェイシャル",
+          "越谷　オイルマッサージ",
+          "せんげん台　マッサージ",
+          "せんげん台　エステ",
+          "せんげん台　フェイシャル",
+          "せんげん台　オイルマッサージ"
+        ]
+      }
+    ]
+  }
 }

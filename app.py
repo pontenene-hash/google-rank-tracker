@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import os
 import random
-import json
 import sqlite3
 import time
 from datetime import date, datetime, timedelta
@@ -17,40 +16,7 @@ import streamlit as st
 
 APP_DIR = Path(__file__).resolve().parent
 DB_PATH = Path(os.getenv("RANK_TRACKER_DB", APP_DIR / "rank_history.db"))
-CONFIG_PATH = APP_DIR / "rank_config.json"
-AUTO_HISTORY_PATH = APP_DIR / "rank_history.csv"
 SERPER_ENDPOINT = "https://google.serper.dev/search"
-
-FALLBACK_SITES = [
-    {
-        "key": "site1",
-        "label": "ponte-nene.jp",
-        "url": "https://ponte-nene.jp/",
-        "keywords": [],
-    },
-    {
-        "key": "site2",
-        "label": "ponte-aroma.jp",
-        "url": "https://ponte-aroma.jp/",
-        "keywords": [],
-    },
-    {
-        "key": "site3",
-        "label": "ponte-nene.net",
-        "url": "https://ponte-nene.net/",
-        "keywords": [],
-    },
-]
-
-
-def load_config() -> dict:
-    if not CONFIG_PATH.exists():
-        return {"sites": FALLBACK_SITES}
-    with CONFIG_PATH.open(encoding="utf-8") as file:
-        config = json.load(file)
-    if not isinstance(config.get("sites"), list) or not config["sites"]:
-        raise ValueError("rank_config.json の sites が正しく設定されていません。")
-    return config
 
 
 def init_db() -> None:
@@ -125,38 +91,14 @@ def save_result(target_url: str, keyword: str, rank: int | None, matched_url: st
 
 def load_history(target_url: str, days: int = 365) -> pd.DataFrame:
     since = (datetime.now() - timedelta(days=days)).isoformat(timespec="seconds")
-    frames: list[pd.DataFrame] = []
     with sqlite3.connect(DB_PATH) as conn:
-        local_history = pd.read_sql_query(
+        return pd.read_sql_query(
             "SELECT checked_at, keyword, rank, matched_url, provider FROM rankings "
             "WHERE target_url = ? AND checked_at >= ? ORDER BY checked_at",
             conn,
             params=(target_url, since),
+            parse_dates=["checked_at"],
         )
-    frames.append(local_history)
-
-    # GitHub Actionsが保存した履歴。リポジトリに残るため、アプリ再起動後も表示できます。
-    if AUTO_HISTORY_PATH.exists():
-        try:
-            automatic = pd.read_csv(AUTO_HISTORY_PATH)
-            required = {"checked_at", "target_url", "keyword", "rank", "matched_url", "provider"}
-            if required.issubset(automatic.columns):
-                target = normalize_url(target_url)
-                automatic = automatic[
-                    automatic["target_url"].fillna("").map(normalize_url) == target
-                ][["checked_at", "keyword", "rank", "matched_url", "provider"]]
-                frames.append(automatic)
-        except (OSError, pd.errors.ParserError):
-            pass
-
-    history = pd.concat(frames, ignore_index=True)
-    if history.empty:
-        return history
-    history["checked_at"] = pd.to_datetime(history["checked_at"], errors="coerce", format="mixed")
-    history["rank"] = pd.to_numeric(history["rank"], errors="coerce")
-    history = history.dropna(subset=["checked_at"])
-    history = history[history["checked_at"] >= pd.Timestamp(since)]
-    return history.drop_duplicates().sort_values("checked_at")
 
 
 def latest_rows(history: pd.DataFrame) -> pd.DataFrame:
@@ -197,9 +139,8 @@ with st.sidebar:
         help="ページ単位か、同じサイト内の全ページを対象にするかを選びます。",
     )
     st.caption("検索地域：日本 / 言語：日本語 / 取得範囲：上位100件")
-    st.success("自動計測：毎週月曜日 9:10（日本時間）")
 
-def render_tracker(tab_key: str, default_url: str, default_keywords: list[str]) -> tuple[str, list[str]]:
+def render_tracker(tab_key: str, default_url: str) -> None:
     left, right = st.columns([1.15, 1])
     with left:
         target_url = st.text_input(
@@ -210,7 +151,6 @@ def render_tracker(tab_key: str, default_url: str, default_keywords: list[str]) 
     with right:
         keyword_text = st.text_area(
             "検索ワードの一覧表（1行に1語）",
-            value="\n".join(default_keywords),
             height=130,
             placeholder="せんげん台 整体\n越谷市 整骨院\n春日部市 鍼灸",
             key=f"keywords_{tab_key}",
@@ -305,51 +245,16 @@ def render_tracker(tab_key: str, default_url: str, default_keywords: list[str]) 
     else:
         st.info("URLと検索ワードを入力して分析を開始してください。")
 
-    return target_url.strip(), keywords
 
-
-try:
-    app_config = load_config()
-except (OSError, json.JSONDecodeError, ValueError) as exc:
-    st.error(f"設定ファイルを読み込めませんでした: {exc}")
-    app_config = {"sites": FALLBACK_SITES}
-
-sites = app_config["sites"][:3]
-tabs = st.tabs([site.get("label", site["url"]) for site in sites])
-current_settings: list[dict] = []
-for tab, site in zip(tabs, sites):
-    with tab:
-        current_url, current_keywords = render_tracker(
-            site.get("key", normalize_url(site["url"]).replace(".", "_")),
-            site["url"],
-            site.get("keywords", []),
-        )
-        current_settings.append(
-            {
-                "key": site.get("key", "site"),
-                "label": site.get("label", normalize_url(current_url).split("/", 1)[0]),
-                "url": current_url,
-                "keywords": current_keywords,
-            }
-        )
-
-with st.expander("自動計測のキーワードを追加・変更する方法"):
-    st.markdown(
-        "各タブの検索ワードを編集した後、下のボタンから設定ファイルをダウンロードし、"
-        "GitHubの `rank_config.json` と置き換えてください。次回の週次計測から反映されます。"
-    )
-    updated_config = {
-        "schedule": {"timezone": "Asia/Tokyo", "day": "monday", "time": "09:10"},
-        "match_mode": "domain",
-        "sites": current_settings,
-    }
-    st.download_button(
-        "📥 更新したrank_config.jsonをダウンロード",
-        json.dumps(updated_config, ensure_ascii=False, indent=2).encode("utf-8"),
-        "rank_config.json",
-        "application/json",
-        use_container_width=True,
-    )
+site1_tab, site2_tab, site3_tab = st.tabs(
+    ["ponte-nene.jp", "ponte-aroma.jp", "ponte-nene.net"]
+)
+with site1_tab:
+    render_tracker("site1", "https://ponte-nene.jp/")
+with site2_tab:
+    render_tracker("site2", "https://ponte-aroma.jp/")
+with site3_tab:
+    render_tracker("site3", "https://ponte-nene.net/")
 
 with st.expander("ご利用前の注意"):
     st.markdown("""
