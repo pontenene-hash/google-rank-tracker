@@ -1,0 +1,21 @@
+Google順位チェッカー Excel一括ダウンロード対応版
+
+置き換えるファイル
+1. app.py
+2. requirements.txt
+
+GitHubでの更新手順
+1. リポジトリの app.py を開き、右上の「…」から Delete file で削除して Commit changes
+2. Add file → Upload files から、このフォルダの app.py をアップロードして Commit changes
+3. requirements.txt も同じように新しいファイルへ置き換える
+4. Streamlit Cloudが自動で再起動するまで1〜3分待つ
+
+変更内容
+- 個別CSVダウンロードを廃止
+- Web 3サイトとGBP 2店舗を1つのExcelファイルにまとめてダウンロード
+- Excel内は5つのシートに分けて表示
+- ダウンロードリンクを別タブで開き、元のアプリ画面を残す
+
+補足
+- rank_config.json、weekly_check.py、.github/workflows 内のファイルは変更不要です。
+- 以前の順位履歴CSVもそのまま利用します。
