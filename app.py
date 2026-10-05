@@ -13,19 +13,13 @@ from html import escape
 from pathlib import Path
 from urllib.parse import urlparse
 
+import altair as alt
 import pandas as pd
 import requests
 import streamlit as st
 from openpyxl.formatting.rule import CellIsRule
 from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
-
-try:
-    import altair as alt
-except Exception:
-    # Streamlit Cloud側の依存関係に一時的な不整合があっても、
-    # 順位確認・計測・Excel出力は利用できるようにする。
-    alt = None
 
 
 APP_DIR = Path(__file__).resolve().parent
@@ -417,11 +411,6 @@ def display_history(target: str, tab_key: str, out_of_range: str, max_rank: int)
     chart_data = history[history["keyword"].isin(selected)].dropna(subset=["rank"]).copy()
     if chart_data.empty:
         st.info("表示できる順位履歴がありません。")
-        return
-    if alt is None:
-        st.warning("グラフ用ライブラリを読み込めないため、順位履歴を表で表示しています。")
-        fallback = chart_data.pivot_table(index="checked_at", columns="keyword", values="rank", aggfunc="last")
-        st.dataframe(fallback.sort_index(ascending=False), use_container_width=True)
         return
     upper = max(max_rank, int(chart_data["rank"].max()))
     chart = (
