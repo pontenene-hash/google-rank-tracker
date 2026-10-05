@@ -1,4 +1,5 @@
 Google順位チェッカー Excel一括ダウンロード対応版
+バージョン: 2026.10.05-keyword-save-v2
 
 置き換えるファイル
 1. app.py
@@ -9,12 +10,28 @@ GitHubでの更新手順
 2. Add file → Upload files から、このフォルダの app.py をアップロードして Commit changes
 3. requirements.txt も同じように新しいファイルへ置き換える
 4. Streamlit Cloudが自動で再起動するまで1〜3分待つ
+5. エラー表示が残る場合は、Manage app → Reboot app を1回押す
 
 変更内容
 - 個別CSVダウンロードを廃止
 - Web 3サイトとGBP 2店舗を1つのExcelファイルにまとめてダウンロード
 - Excel内は5つのシートに分けて表示
 - ダウンロードリンクを別タブで開き、元のアプリ画面を残す
+- Streamlit Cloudで安定するようにAltairなどの互換バージョンを固定
+- Web 3サイトとGBP 2店舗の各タブでキーワードを追加・削除して保存可能
+- 更新したrank_config.jsonをダウンロードし、毎週月曜日の自動計測にも反映可能
+
+キーワードの更新方法
+1. 更新したいWebサイトまたはGBPのタブを開く
+2. キーワード欄を編集する（1行に1語）
+3. 「キーワードを更新」を押す
+4. 「更新した設定ファイルをダウンロード」を押してrank_config.jsonを保存する
+5. GitHubにあるrank_config.jsonを、ダウンロードしたファイルへ置き換える
+6. 手動計測する場合は、アプリへ戻って「分析開始」を押す
+
+重要
+Streamlit Cloudはアプリ内で変更したファイルが再起動時に元へ戻る場合があります。
+キーワードを確実に保存し、毎週月曜日の自動計測へ反映するため、更新後のrank_config.jsonをGitHubへアップロードしてください。
 
 補足
 - rank_config.json、weekly_check.py、.github/workflows 内のファイルは変更不要です。

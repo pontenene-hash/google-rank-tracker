@@ -35,6 +35,7 @@ CONFIG_PATH = APP_DIR / "rank_config.json"
 SERPER_SEARCH_ENDPOINT = "https://google.serper.dev/search"
 SERPER_MAPS_ENDPOINT = "https://google.serper.dev/maps"
 HISTORY_COLUMNS = ["checked_at", "target_url", "keyword", "rank", "matched_url", "provider"]
+APP_VERSION = "2026.10.05-keyword-save-v2"
 
 DEFAULT_CONFIG = {
     "sites": [
@@ -128,6 +129,108 @@ def load_config() -> dict:
         if converted:
             config["gbp"]["profiles"] = converted
     return config
+
+
+def save_keywords(item_type: str, item: dict, keywords: list[str]) -> tuple[bool, str, dict]:
+    """変更をセッションへ保存し、可能ならサーバー上のrank_config.jsonにも反映する。"""
+    session_config = st.session_state.get("editable_rank_config")
+    if isinstance(session_config, dict):
+        raw = deepcopy(session_config)
+    else:
+        try:
+            if CONFIG_PATH.exists():
+                raw = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+            else:
+                raw = deepcopy(DEFAULT_CONFIG)
+        except (OSError, json.JSONDecodeError):
+            raw = deepcopy(DEFAULT_CONFIG)
+
+    if item_type == "site":
+        container = raw.setdefault("sites", [])
+        item_id = str(item.get("id") or "")
+        target = site_target(item)
+    else:
+        gbp = raw.setdefault("gbp", {})
+        if not isinstance(gbp, dict):
+            gbp = {}
+            raw["gbp"] = gbp
+        container = gbp.setdefault("profiles", [])
+        item_id = str(item.get("id") or "")
+        target = profile_target(item)
+
+    updated = False
+    if isinstance(container, list):
+        for saved_item in container:
+            if not isinstance(saved_item, dict):
+                continue
+            saved_id = str(saved_item.get("id") or "")
+            saved_target = site_target(saved_item) if item_type == "site" else profile_target(saved_item)
+            if (item_id and saved_id == item_id) or (target and saved_target == target):
+                saved_item["keywords"] = keywords
+                updated = True
+                break
+        if not updated:
+            new_item = deepcopy(item)
+            new_item["keywords"] = keywords
+            container.append(new_item)
+            updated = True
+    elif isinstance(container, dict):
+        lookup_key = item_id
+        if lookup_key and isinstance(container.get(lookup_key), dict):
+            container[lookup_key]["keywords"] = keywords
+            updated = True
+        else:
+            for saved_item in container.values():
+                if not isinstance(saved_item, dict):
+                    continue
+                saved_target = site_target(saved_item) if item_type == "site" else profile_target(saved_item)
+                if target and saved_target == target:
+                    saved_item["keywords"] = keywords
+                    updated = True
+                    break
+
+        if not updated:
+            lookup_key = lookup_key or str(len(container) + 1)
+            new_item = deepcopy(item)
+            new_item["keywords"] = keywords
+            container[lookup_key] = new_item
+            updated = True
+
+    if not updated:
+        return False, "設定ファイル内で対象を確認できませんでした。", raw
+
+    # Streamlit Cloudのファイル保存可否にかかわらず、現在の画面では保持する。
+    st.session_state["editable_rank_config"] = deepcopy(raw)
+
+    try:
+        temporary_path = CONFIG_PATH.with_suffix(".json.tmp")
+        temporary_path.write_text(json.dumps(raw, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        temporary_path.replace(CONFIG_PATH)
+    except OSError as exc:
+        return (
+            True,
+            "変更内容をこの画面に保存しました。サーバーへ直接保存できないため、下の設定ファイルをGitHubへアップロードしてください。",
+            raw,
+        )
+    return True, "キーワードを更新しました。", raw
+
+
+def config_download_html(config_data: dict | None = None) -> str:
+    if isinstance(config_data, dict):
+        payload = (json.dumps(config_data, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
+    else:
+        try:
+            payload = CONFIG_PATH.read_bytes() if CONFIG_PATH.exists() else (
+                json.dumps(DEFAULT_CONFIG, ensure_ascii=False, indent=2) + "\n"
+            ).encode("utf-8")
+        except OSError:
+            payload = (json.dumps(DEFAULT_CONFIG, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
+    encoded = base64.b64encode(payload).decode("ascii")
+    return (
+        '<a class="config-download" target="_blank" rel="noopener" '
+        'download="rank_config.json" '
+        f'href="data:application/json;base64,{encoded}">⚙️ 更新した設定ファイルをダウンロード</a>'
+    )
 
 
 def site_label(site: dict) -> str:
@@ -483,11 +586,27 @@ def render_web_tracker(site: dict, api_key: str, demo_mode: bool, match_mode: st
         key=f"keywords_{key}",
     )
     keywords = list(dict.fromkeys(line.strip() for line in keyword_text.splitlines() if line.strip()))
-    if st.button("🔍 分析開始", type="primary", use_container_width=True, key=f"run_{key}"):
+    action_col, save_col = st.columns(2)
+    with action_col:
+        run_clicked = st.button("🔍 分析開始", type="primary", use_container_width=True, key=f"run_{key}")
+    with save_col:
+        save_clicked = st.button("💾 キーワードを更新", use_container_width=True, key=f"save_{key}")
+    if run_clicked:
         if not target_url.strip():
             st.error("WebページのURLを入力してください。")
         else:
             run_measurement(target_url.strip(), keywords, "Web", api_key, demo_mode, match_mode)
+    if save_clicked:
+        if not keywords:
+            st.error("保存するキーワードを1つ以上入力してください。")
+        else:
+            success, message, updated_config = save_keywords("site", site, keywords)
+            if success:
+                st.success(f"{message} 現在は{len(keywords)}語です。")
+                st.info("変更を消さず、毎週月曜日の自動計測にも反映するには、下のファイルをGitHubのrank_config.jsonと置き換えてください。")
+                st.markdown(config_download_html(updated_config), unsafe_allow_html=True)
+            else:
+                st.error(message)
     display_history(target_url.strip(), key, "100位圏外", 100)
 
 
@@ -504,8 +623,24 @@ def render_gbp_tracker(profile: dict, api_key: str, demo_mode: bool, match_mode:
         key=f"keywords_{key}",
     )
     keywords = list(dict.fromkeys(line.strip() for line in keyword_text.splitlines() if line.strip()))
-    if st.button("📍 GBP順位を分析", type="primary", use_container_width=True, key=f"run_{key}"):
+    action_col, save_col = st.columns(2)
+    with action_col:
+        run_clicked = st.button("📍 GBP順位を分析", type="primary", use_container_width=True, key=f"run_{key}")
+    with save_col:
+        save_clicked = st.button("💾 キーワードを更新", use_container_width=True, key=f"save_{key}")
+    if run_clicked:
         run_measurement(profile_target(profile), keywords, "GBP", api_key, demo_mode, match_mode)
+    if save_clicked:
+        if not keywords:
+            st.error("保存するキーワードを1つ以上入力してください。")
+        else:
+            success, message, updated_config = save_keywords("gbp", profile, keywords)
+            if success:
+                st.success(f"{message} 現在は{len(keywords)}語です。")
+                st.info("変更を消さず、毎週月曜日の自動計測にも反映するには、下のファイルをGitHubのrank_config.jsonと置き換えてください。")
+                st.markdown(config_download_html(updated_config), unsafe_allow_html=True)
+            else:
+                st.error(message)
     display_history(profile_target(profile), key, "取得範囲外", 100)
 
 
@@ -527,6 +662,8 @@ st.markdown(
     .iphone-note {margin:.7rem 0 0;}
     .excel-download {display:block; text-align:center; padding:.85rem 1rem; border-radius:12px; background:#16834a; color:white!important; text-decoration:none!important; font-weight:700; font-size:1.05rem;}
     .excel-download:hover {background:#116b3c;}
+    .config-download {display:block; text-align:center; padding:.75rem .9rem; border-radius:10px; background:#475569; color:white!important; text-decoration:none!important; font-weight:700;}
+    .config-download:hover {background:#334155;}
     @media (max-width:640px) {.block-container{padding-left:1rem;padding-right:1rem}.hero{padding:1.25rem}.hero p{font-size:.95rem}}
     </style>""",
     unsafe_allow_html=True,
@@ -535,6 +672,7 @@ st.markdown(
     '<div class="hero"><h1>Google順位<br>チェッカー</h1><p>Web検索とGoogleマップの掲載順位を記録し、1年間の変化を見える化します。</p></div>',
     unsafe_allow_html=True,
 )
+st.caption(f"アプリバージョン：{APP_VERSION}")
 
 with st.sidebar:
     st.header("⚙️ 設定")
@@ -564,12 +702,19 @@ with gbp_main:
         with tab:
             render_gbp_tracker(profile, api_key, demo_mode, match_mode)
 
+if isinstance(st.session_state.get("editable_rank_config"), dict):
+    st.markdown("### 💾 更新した検索ワードの保存")
+    st.info("このファイルをGitHubのrank_config.jsonと置き換えると、再起動後も設定が残り、毎週月曜日の自動計測にも反映されます。")
+    st.markdown(config_download_html(st.session_state["editable_rank_config"]), unsafe_allow_html=True)
+
 with st.expander("ご利用前の注意"):
     st.markdown(
         """
         - 検索順位は地域・端末・時刻などで変わるため、実際の個人検索と差が出ることがあります。
         - Webの「100位圏外」およびGBPの「取得範囲外」は、取得結果内に対象が見つからなかった状態です。
         - Excelには直近1年間の履歴が、Web 3シート・GBP 2シートに分かれて保存されます。
+        - キーワードを編集したら、同じタブの「キーワードを更新」を押してください。
+        - 毎週月曜日の自動計測にも反映するには、表示されるrank_config.jsonをGitHubへアップロードしてください。
         - APIキーは順位取得にのみ利用し、順位履歴には保存しません。
         """
     )
