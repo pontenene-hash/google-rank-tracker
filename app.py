@@ -5,6 +5,7 @@ import io
 import json
 import os
 import random
+import re
 import sqlite3
 import time
 from copy import deepcopy
@@ -35,7 +36,7 @@ CONFIG_PATH = APP_DIR / "rank_config.json"
 SERPER_SEARCH_ENDPOINT = "https://google.serper.dev/search"
 SERPER_MAPS_ENDPOINT = "https://google.serper.dev/maps"
 HISTORY_COLUMNS = ["checked_at", "target_url", "keyword", "rank", "matched_url", "provider"]
-APP_VERSION = "2026.10.05-keyword-save-v2"
+APP_VERSION = "2026.10.10-gbp-cid-fix-v3"
 
 DEFAULT_CONFIG = {
     "sites": [
@@ -314,12 +315,34 @@ def serper_web_rank(keyword: str, target_url: str, api_key: str, match_mode: str
 
 
 def normalize_cid(value: object) -> str:
+    """GBPのCIDを比較可能な数字だけの形式へそろえる。
+
+    アプリ内部では ``gbp:123...``、Serperの応答では ``123...`` や
+    ``cid:123...``、URL内では ``?cid=123...`` になることがある。
+    """
     text = str(value or "").strip()
-    return text[4:] if text.startswith("cid:") else text
+    if not text:
+        return ""
+
+    lowered = text.lower()
+    for prefix in ("gbp:", "cid:"):
+        if lowered.startswith(prefix):
+            text = text[len(prefix):].strip()
+            lowered = text.lower()
+
+    url_match = re.search(r"(?:[?&]|^)cid=(\d+)", text, flags=re.IGNORECASE)
+    if url_match:
+        return url_match.group(1)
+
+    # CIDは数字。余計な空白や引用符が含まれた応答にも対応する。
+    numeric_match = re.fullmatch(r"[^0-9]*(\d{10,})[^0-9]*", text)
+    return numeric_match.group(1) if numeric_match else text
 
 
 def serper_gbp_rank(keyword: str, target: str, api_key: str) -> tuple[int | None, str | None]:
     target_cid = normalize_cid(target)
+    if not target_cid:
+        raise ValueError("GBPのCIDが設定されていません。rank_config.jsonを確認してください。")
     headers = {"X-API-KEY": api_key, "Content-Type": "application/json"}
     payload = {"q": keyword, "gl": "jp", "hl": "ja", "num": 100}
     response = requests.post(SERPER_MAPS_ENDPOINT, headers=headers, json=payload, timeout=30)
@@ -329,8 +352,14 @@ def serper_gbp_rank(keyword: str, target: str, api_key: str) -> tuple[int | None
         raise RuntimeError(data["message"])
     places = data.get("places") or data.get("localResults") or []
     for fallback_position, item in enumerate(places, start=1):
-        item_cid = normalize_cid(item.get("cid") or item.get("dataCid"))
-        if item_cid and item_cid == target_cid:
+        cid_candidates = (
+            item.get("cid"),
+            item.get("dataCid"),
+            item.get("data_cid"),
+            item.get("link"),
+        )
+        item_cids = {normalize_cid(candidate) for candidate in cid_candidates if candidate}
+        if target_cid in item_cids:
             matched = item.get("link") or item.get("website") or item.get("title") or target
             return int(item.get("position", fallback_position)), str(matched)
     return None, None

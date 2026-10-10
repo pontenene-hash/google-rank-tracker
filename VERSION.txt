@@ -1,5 +1,5 @@
 Google順位チェッカー
-バージョン: 2026.10.05-keyword-save-v2
+バージョン: 2026.10.10-gbp-cid-fix-v3
 
 この版には以下が含まれています。
 - Web 3サイトとGBP 2店舗のキーワード更新ボタン
@@ -7,3 +7,4 @@ Google順位チェッカー
 - 更新済みrank_config.jsonのダウンロード
 - 5シートExcel一括ダウンロード
 - Altair互換性修正
+- GBPのCID照合不具合を修正（gbp: / cid: / 数値 / URL形式に対応）

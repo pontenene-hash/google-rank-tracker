@@ -36,3 +36,11 @@ Streamlit Cloudはアプリ内で変更したファイルが再起動時に元�
 補足
 - rank_config.json、weekly_check.py、.github/workflows 内のファイルは変更不要です。
 - 以前の順位履歴CSVもそのまま利用します。
+【2026年10月10日 GBP順位修正版】
+
+今回の更新では、GBPの設定値「gbp:数字」とSerper検索結果の「数字」を
+正しく照合できず、全件が「取得範囲外」になる問題を修正しています。
+
+最重要：GitHubの app.py を、このZIP内の app.py に置き換えてください。
+rank_config.json と requirements.txt は現在の内容を同梱しています。
+
